@@ -1002,6 +1002,9 @@ schedule_relay(struct bc_mesh *m, const struct bc_packet *p,
 	slot->subset = subset_relay(p);
 	slot->due = bc_now_ms() + d.delay_ms;
 	memcpy(slot->key, key, BC_HASH_LEN);
+
+	mlog(m, "relay type 0x%02x ttl %u->%u in %d ms%s", p->type, p->ttl,
+	     d.ttl, d.delay_ms, slot->subset ? " subset" : "");
 }
 
 static void

@@ -1,0 +1,119 @@
+.Dd August 16, 2026
+.Dt BITCHAT 1
+.Os
+.Sh NAME
+.Nm bitchat
+.Nd terminal client for the BitChat Bluetooth mesh
+.Sh SYNOPSIS
+.Nm
+.Op Fl d
+.Op Fl i Ar index
+.Op Fl n Ar nickname
+.Op Fl v
+.Nm
+.Op Fl d
+.Op Fl n Ar nickname
+.Fl L Ar port
+.Op Fl C Ar host : Ns Ar port ...
+.Sh DESCRIPTION
+.Nm
+joins the BitChat Bluetooth Low Energy mesh and shows public and private chat
+in a terminal window.
+Nearby devices form the mesh without infrastructure or accounts.
+Public messages are signed and flooded with a hop limit; private messages run
+inside a Noise
+.Sy XX
+session, so relays carry only ciphertext.
+.Pp
+The radio is driven through
+.Xr bluetoothd 8 :
+.Nm
+registers a GATT application and an advertisement with BlueZ over D-Bus, and
+never takes the adapter for itself.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl d
+Show transport chatter in the message pane: link state and connection
+failures.
+.Cm /debug
+toggles it at run time.
+.It Fl i Ar index
+Use adapter
+.Pa /org/bluez/hci Ns Ar index .
+The default is 0.
+.It Fl n Ar nickname
+Announce this nickname.
+The default comes from
+.Ev USER .
+.It Fl L Ar port
+Run the mesh over TCP instead of Bluetooth, listening on
+.Ar port .
+Pass 0 for any free port.
+.It Fl C Ar host : Ns Ar port
+Dial another node.
+Repeatable, and implies
+.Fl L .
+Nodes wired this way run the same mesh, with presence, relaying and Noise
+sessions, and no radio involved.
+It is how multi-hop behaviour is tested without three phones.
+.It Fl v
+Print the version and exit.
+.El
+.Sh COMMANDS
+Text typed at the prompt is sent to the public channel.
+Lines that start with
+.Sq /
+are commands:
+.Bl -tag -width "/msg peer text"
+.It Cm /who
+List reachable peers.
+.It Cm /msg Ar peer Ar text
+Send a private message.
+.Ar peer
+matches a nickname or peer ID prefix.
+The first message opens a Noise session and is delivered when it completes.
+.It Cm /nick Ar name
+Change the announced nickname.
+.It Cm /debug
+Toggle the transport log.
+.It Cm /id
+Print your own peer ID.
+.It Cm /quit
+Leave the mesh and exit.
+.El
+.Sh TEXT
+Message text is UTF-8.
+Emoji shortcodes expand as you type: the name between two colons, such as
+.Sq bone ,
+becomes the glyph when the closing colon arrives.
+Tab completes: a command at the start of the line, a peer name after
+.Sq @
+or after
+.Cm /msg ,
+and an emoji shortcode anywhere else.
+One match is applied; several extend the input as far as they agree and are
+listed.
+A message that names you is shown in red and rings the bell.
+Text that is not valid UTF-8 is dropped on receive, and control bytes never
+reach the terminal.
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/.config/bitchat/identity
+The Curve25519 and Ed25519 private keys, mode 0600.
+The peer ID is the first eight bytes of the SHA-256 digest of the Curve25519
+public key, so deleting this file gives the device a new identity.
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh SEE ALSO
+.Xr bluetoothctl 1 ,
+.Xr bluetoothd 8
+.Sh AUTHORS
+.An Nick Owens Aq Mt mischief@offblast.org
+.Sh CAVEATS
+Bluetooth is the only transport.
+There is no Nostr path, no store-and-forward courier, and no file or voice
+transfer.
+Announcements carry the nickname and public keys in cleartext, so anyone in
+radio range can enumerate participants.

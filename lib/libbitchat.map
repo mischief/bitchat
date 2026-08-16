@@ -1,0 +1,25 @@
+BITCHAT_0 {
+global:
+	bc_aead_*;
+	bc_announce_*;
+	bc_ble_*;
+	bc_ed25519_*;
+	bc_hex_*;
+	bc_hkdf;
+	bc_hmac_sha256;
+	bc_identity_*;
+	bc_is_broadcast;
+	bc_mentions;
+	bc_mesh_*;
+	bc_private_message_*;
+	bc_noise_*;
+	bc_packet_*;
+	bc_random;
+	bc_sha256;
+	bc_tcp_*;
+	bc_utf8_*;
+	bc_uuid;
+	bc_x25519_*;
+local:
+	*;
+};

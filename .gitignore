@@ -1,0 +1,5 @@
+build/
+build-*/
+.*.swp
+core.*
+fuzz/out_*

@@ -590,20 +590,83 @@ try_connect(struct bc_ble *b, const char *device)
 	}
 }
 
-static void
-subscribe_char(struct bc_ble *b, const char *char_path)
+/* An ATT write carries the opcode and the handle before the value. */
+#define ATT_WRITE_OVERHEAD 3
+
+struct mtu_ctx {
+	struct bc_ble *b;
+	char chr[192];
+};
+
+static void report_mtu(struct bc_ble *b, struct bc_link *l, uint16_t mtu);
+
+/*
+ * BlueZ fills in the MTU once the link is negotiated, which is usually after
+ * the characteristic object appears, so ask for it rather than wait.
+ */
+static int
+mtu_done(sd_bus_message *reply, void *ud, sd_bus_error *ret_error)
 {
+	struct mtu_ctx *ctx = ud;
+	uint16_t mtu = 0;
+	char device[128];
+
+	if (sd_bus_message_get_error(reply) == NULL &&
+	    sd_bus_message_read(reply, "v", "q", &mtu) >= 0) {
+		device_of(ctx->chr, device, sizeof(device));
+		report_mtu(ctx->b, link_find(ctx->b, device, ctx->chr), mtu);
+	}
+	free(ctx);
+	return 0;
+}
+
+static void
+ask_mtu(struct bc_ble *b, const char *char_path)
+{
+	struct mtu_ctx *ctx = calloc(1, sizeof(*ctx));
+
+	if (ctx == NULL)
+		return;
+	ctx->b = b;
+	snprintf(ctx->chr, sizeof(ctx->chr), "%s", char_path);
+
+	if (sd_bus_call_method_async(b->bus, NULL, BLUEZ, char_path,
+	                             "org.freedesktop.DBus.Properties", "Get",
+	                             mtu_done, ctx, "ss", GATT_CHAR_IFACE,
+	                             "MTU") < 0)
+		free(ctx);
+}
+
+static void
+report_mtu(struct bc_ble *b, struct bc_link *l, uint16_t mtu)
+{
+	if (mtu <= ATT_WRITE_OVERHEAD)
+		return;
+	blog(b, "link mtu %u", mtu);
+	if (l != NULL && b->ops.on_mtu != NULL)
+		b->ops.on_mtu(b->ud, l, (size_t)(mtu - ATT_WRITE_OVERHEAD));
+}
+
+static void
+subscribe_char(struct bc_ble *b, const char *char_path, uint16_t mtu)
+{
+	struct bc_link *l;
 	char device[128];
 
 	device_of(char_path, device, sizeof(device));
-	if (link_find(b, device, char_path) != NULL)
+	l = link_find(b, device, char_path);
+	if (l != NULL) {
+		report_mtu(b, l, mtu);
 		return;
+	}
 
 	sd_bus_call_method_async(b->bus, NULL, BLUEZ, char_path,
 	                         GATT_CHAR_IFACE, "StartNotify", NULL, NULL,
 	                         NULL);
 
-	link_add(b, device, char_path, true);
+	report_mtu(b, link_add(b, device, char_path, true), mtu);
+	if (mtu == 0)
+		ask_mtu(b, char_path);
 }
 
 /*
@@ -653,9 +716,9 @@ props_have_service(struct bc_ble *b, const char *path, sd_bus_message *msg)
 	return found;
 }
 
-/* Read the UUID property out of an interface dictionary. */
+/* Read the UUID out of a characteristic dictionary, and its MTU if present. */
 static bool
-props_char_uuid(sd_bus_message *msg, char *out, size_t len)
+props_char_uuid(sd_bus_message *msg, char *out, size_t len, uint16_t *mtu)
 {
 	bool found = false;
 
@@ -675,6 +738,11 @@ props_char_uuid(sd_bus_message *msg, char *out, size_t len)
 				snprintf(out, len, "%s", uuid);
 				found = true;
 			}
+		} else if (key != NULL && strcmp(key, "MTU") == 0) {
+			uint16_t value = 0;
+
+			if (sd_bus_message_read(msg, "v", "q", &value) >= 0)
+				*mtu = value;
 		} else {
 			sd_bus_message_skip(msg, "v");
 		}
@@ -711,10 +779,11 @@ on_interfaces_added(sd_bus_message *msg, void *ud, sd_bus_error *err)
 		} else if (iface != NULL &&
 		           strcmp(iface, GATT_CHAR_IFACE) == 0) {
 			char uuid[64] = "";
+			uint16_t mtu = 0;
 
-			if (props_char_uuid(msg, uuid, sizeof(uuid)) &&
+			if (props_char_uuid(msg, uuid, sizeof(uuid), &mtu) &&
 			    uuid_eq(uuid, CHAR_UUID))
-				subscribe_char(b, path);
+				subscribe_char(b, path, mtu);
 		} else {
 			sd_bus_message_skip(msg, "a{sv}");
 		}
@@ -800,7 +869,15 @@ on_properties_changed(sd_bus_message *msg, void *ud, sd_bus_error *err)
 
 		if (sd_bus_message_read(msg, "s", &key) < 0)
 			break;
-		if (key != NULL && strcmp(key, "Value") == 0) {
+		if (key != NULL && strcmp(key, "MTU") == 0) {
+			uint16_t mtu = 0;
+			char device[128];
+
+			if (sd_bus_message_read(msg, "v", "q", &mtu) >= 0) {
+				device_of(path, device, sizeof(device));
+				report_mtu(b, link_find(b, device, path), mtu);
+			}
+		} else if (key != NULL && strcmp(key, "Value") == 0) {
 			const void *data = NULL;
 			size_t len = 0;
 
@@ -869,11 +946,12 @@ managed_objects_done(sd_bus_message *reply, void *ud, sd_bus_error *ret_error)
 			} else if (iface != NULL &&
 			           strcmp(iface, GATT_CHAR_IFACE) == 0) {
 				char uuid[64] = "";
+				uint16_t mtu = 0;
 
-				if (props_char_uuid(reply, uuid,
-				                    sizeof(uuid)) &&
+				if (props_char_uuid(reply, uuid, sizeof(uuid),
+				                    &mtu) &&
 				    uuid_eq(uuid, CHAR_UUID))
-					subscribe_char(b, path);
+					subscribe_char(b, path, mtu);
 			} else {
 				sd_bus_message_skip(reply, "a{sv}");
 			}

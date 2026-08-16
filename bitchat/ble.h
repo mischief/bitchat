@@ -31,6 +31,12 @@ struct bc_ble_ops {
 	 * poll(2) loop can ignore this and call bc_ble_pollfds each turn.
 	 */
 	void (*on_events)(void *ud, int fd, short events);
+	/*
+	 * Largest frame this link accepts, once BlueZ knows the MTU. New
+	 * callbacks go at the end: anything compiled against an older header
+	 * keeps its layout.
+	 */
+	void (*on_mtu)(void *ud, void *link, size_t max_frame);
 };
 
 BC_API int bc_ble_new(struct bc_ble **ret, int hci_index,

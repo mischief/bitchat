@@ -18,7 +18,9 @@
 #define FRAGMENT_TTL_CAP 7
 #define FRAGMENT_TTL_CAP_DENSE 5
 #define RELAY_SLOTS 128
-#define FRAG_CHUNK 400
+#define FRAG_CHUNK 400 /* used until a link reports its own limit */
+#define FRAG_CHUNK_MIN 64
+#define FRAG_OVERHEAD 48 /* packet header, IDs and the fragment header */
 #define FRAG_SLOTS 16
 #define FRAG_MAX_PARTS 512
 #define MAX_FRAME (64 * 1024)
@@ -79,6 +81,7 @@ struct bc_mesh {
 
 	struct peer *peers;
 	void *links[64];
+	size_t link_mtu[64];
 	size_t link_count;
 
 	struct seen_entry seen[SEEN_SLOTS];
@@ -218,12 +221,45 @@ emit(struct bc_mesh *m, void *link, void *except, const uint8_t *frame,
 		m->ops.broadcast(m->ud, except, frame, len);
 }
 
+/* The smallest frame any link will take, which is what fragments must fit. */
+static size_t
+link_limit(const struct bc_mesh *m)
+{
+	size_t limit = 0, i;
+
+	for (i = 0; i < m->link_count; i++) {
+		if (m->link_mtu[i] == 0)
+			continue;
+		if (limit == 0 || m->link_mtu[i] < limit)
+			limit = m->link_mtu[i];
+	}
+	return limit;
+}
+
+static size_t
+chunk_size(const struct bc_mesh *m)
+{
+	size_t limit = link_limit(m);
+	size_t chunk;
+
+	if (limit == 0)
+		return FRAG_CHUNK;
+
+	chunk = limit > FRAG_OVERHEAD ? limit - FRAG_OVERHEAD : 0;
+	if (chunk > FRAG_CHUNK)
+		chunk = FRAG_CHUNK;
+	if (chunk < FRAG_CHUNK_MIN)
+		chunk = FRAG_CHUNK_MIN;
+	return chunk;
+}
+
 static int
 send_fragments(struct bc_mesh *m, void *link, void *except,
                const struct bc_packet *p, const uint8_t *frame, size_t len)
 {
 	uint8_t frag_id[8];
-	size_t total = (len + FRAG_CHUNK - 1) / FRAG_CHUNK;
+	size_t cut = chunk_size(m);
+	size_t total = (len + cut - 1) / cut;
 	size_t i;
 
 	if (total > 0xffff)
@@ -235,12 +271,12 @@ send_fragments(struct bc_mesh *m, void *link, void *except,
 		struct bc_packet f = {0};
 		autofree uint8_t *payload = NULL;
 		autofree uint8_t *out = NULL;
-		size_t chunk = len - i * FRAG_CHUNK;
+		size_t chunk = len - i * cut;
 		size_t outlen;
 		int r;
 
-		if (chunk > FRAG_CHUNK)
-			chunk = FRAG_CHUNK;
+		if (chunk > cut)
+			chunk = cut;
 
 		payload = malloc(13 + chunk);
 		if (payload == NULL)
@@ -251,7 +287,7 @@ send_fragments(struct bc_mesh *m, void *link, void *except,
 		payload[10] = (uint8_t)(total >> 8);
 		payload[11] = (uint8_t)total;
 		payload[12] = p->type;
-		memcpy(payload + 13, frame + i * FRAG_CHUNK, chunk);
+		memcpy(payload + 13, frame + i * cut, chunk);
 
 		f.version = 1;
 		f.type = BC_MSG_FRAGMENT;
@@ -288,8 +324,14 @@ transmit(struct bc_mesh *m, const struct bc_packet *p, void *link, void *except)
 	if (r < 0)
 		return r;
 
-	if (len > FRAG_CHUNK + 64)
-		return send_fragments(m, link, except, p, frame, len);
+	{
+		size_t limit = link_limit(m);
+
+		if (limit == 0)
+			limit = FRAG_CHUNK + FRAG_OVERHEAD;
+		if (len > limit)
+			return send_fragments(m, link, except, p, frame, len);
+	}
 
 	emit(m, link, except, frame, len);
 	return 0;
@@ -1096,6 +1138,19 @@ bc_mesh_link_up(struct bc_mesh *m, void *link)
 }
 
 void
+bc_mesh_set_link_mtu(struct bc_mesh *m, const void *link, size_t max_frame)
+{
+	size_t i;
+
+	if (m == NULL || link == NULL)
+		return;
+
+	for (i = 0; i < m->link_count; i++)
+		if (m->links[i] == link)
+			m->link_mtu[i] = max_frame;
+}
+
+void
 bc_mesh_link_rssi(struct bc_mesh *m, const void *link, int rssi)
 {
 	struct peer *p;
@@ -1123,6 +1178,7 @@ bc_mesh_link_down(struct bc_mesh *m, const void *link)
 		if (m->links[i] != link)
 			continue;
 		m->links[i] = m->links[m->link_count - 1];
+		m->link_mtu[i] = m->link_mtu[m->link_count - 1];
 		m->link_count--;
 		break;
 	}

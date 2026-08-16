@@ -52,6 +52,13 @@ BC_API void bc_mesh_link_down(struct bc_mesh *m, const void *link);
 BC_API void bc_mesh_recv(struct bc_mesh *m, void *link, const uint8_t *frame,
                          size_t len);
 
+/*
+ * Largest frame a link accepts. The mesh fragments to fit the smallest link
+ * it holds; without this it assumes a conservative default.
+ */
+BC_API void bc_mesh_set_link_mtu(struct bc_mesh *m, const void *link,
+                                 size_t max_frame);
+
 /* Record the signal strength the transport measured for a link. */
 BC_API void bc_mesh_link_rssi(struct bc_mesh *m, const void *link, int rssi);
 

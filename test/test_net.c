@@ -19,7 +19,7 @@ struct node {
 	struct bc_mesh *mesh;
 	struct bc_tcp *net;
 	const char *nick;
-	char last_public[256];
+	char last_public[1200];
 	char last_private[256];
 	int peers_seen;
 };
@@ -181,6 +181,25 @@ main(void)
 	assert(bc_mesh_send_public(nodes[0].mesh, "rock good") == 0);
 	run(1500);
 	assert(strcmp(nodes[2].last_public, "alice: rock good") == 0);
+
+	/*
+	 * A message past the link size splits into fragments, relays through
+	 * the middle node, and reassembles at the far end.
+	 */
+	{
+		static char big[1000];
+		static char want[sizeof(big) + 16];
+		size_t j;
+
+		for (j = 0; j < sizeof(big) - 1; j++)
+			big[j] = (char)('a' + (j % 26));
+		big[sizeof(big) - 1] = '\0';
+
+		snprintf(want, sizeof(want), "alice: %s", big);
+		assert(bc_mesh_send_public(nodes[0].mesh, big) == 0);
+		run(2000);
+		assert(strcmp(nodes[2].last_public, want) == 0);
+	}
 
 	/* A private message opens a Noise session two hops away. */
 	assert(bc_mesh_resolve_peer(nodes[0].mesh, "carol", peer_id));

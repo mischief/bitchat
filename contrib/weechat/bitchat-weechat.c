@@ -127,6 +127,12 @@ ble_link_down(void *ud, void *link)
 }
 
 static void
+ble_mtu(void *ud, void *link, size_t max_frame)
+{
+	bc_mesh_set_link_mtu(mesh, link, max_frame);
+}
+
+static void
 ble_rssi(void *ud, void *link, int rssi)
 {
 	bc_mesh_link_rssi(mesh, link, rssi);
@@ -212,7 +218,7 @@ cmd_bitchat(const void *pointer, void *data, struct t_gui_buffer *buf, int argc,
             char **argv, char **argv_eol)
 {
 	if (argc >= 2 && strcmp(argv[1], "who") == 0) {
-		struct bc_peer_info peers[16];
+		static struct bc_peer_info peers[16];
 		size_t n, i;
 
 		n = bc_mesh_peers(mesh, peers,
@@ -287,6 +293,7 @@ weechat_plugin_init(struct t_weechat_plugin *plugin, int argc, char *argv[])
 	    .on_link_up = ble_link_up,
 	    .on_link_down = ble_link_down,
 	    .on_frame = ble_frame,
+	    .on_mtu = ble_mtu,
 	    .on_rssi = ble_rssi,
 	    .on_log = on_log,
 	    .on_events = on_events,

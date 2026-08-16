@@ -168,6 +168,14 @@ ble_link_down(void *ud, void *link)
 }
 
 static void
+ble_mtu(void *ud, void *link, size_t max_frame)
+{
+	struct app *a = ud;
+
+	bc_mesh_set_link_mtu(a->mesh, link, max_frame);
+}
+
+static void
 ble_rssi(void *ud, void *link, int rssi)
 {
 	struct app *a = ud;
@@ -359,6 +367,7 @@ main(int argc, char *argv[])
 	    .on_link_up = ble_link_up,
 	    .on_link_down = ble_link_down,
 	    .on_frame = ble_frame,
+	    .on_mtu = ble_mtu,
 	    .on_rssi = ble_rssi,
 	    .on_log = debug_log,
 	};

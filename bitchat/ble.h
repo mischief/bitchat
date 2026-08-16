@@ -22,6 +22,8 @@ struct bc_ble_ops {
 	void (*on_link_down)(void *ud, void *link);
 	void (*on_frame)(void *ud, void *link, const uint8_t *frame,
 	                 size_t len);
+	/* Signal strength for a link, in dBm, as BlueZ reports it. */
+	void (*on_rssi)(void *ud, void *link, int rssi);
 	void (*on_log)(void *ud, const char *line);
 	/*
 	 * The descriptor to watch, or the events wanted on it, changed.
@@ -47,6 +49,20 @@ BC_API int bc_ble_send(struct bc_ble *b, void *link, const uint8_t *frame,
                        size_t len);
 BC_API int bc_ble_broadcast(struct bc_ble *b, const void *except,
                             const uint8_t *frame, size_t len);
+
+/*
+ * Signal strength as last seen from a device advertising our service. BlueZ
+ * reports RSSI from advertising only, and BitChat peers advertise under a
+ * rotating address, so these are sightings rather than per-peer readings.
+ */
+struct bc_rssi_info {
+	char address[24]; /* the BlueZ device path leaf, MAC-like */
+	int rssi;
+	int64_t age_ms;
+};
+
+BC_API size_t bc_ble_rssi(const struct bc_ble *b, struct bc_rssi_info *out,
+                          size_t max);
 
 /* The single descriptor this transport runs on, and what it wants on it. */
 BC_API int bc_ble_fd(const struct bc_ble *b);

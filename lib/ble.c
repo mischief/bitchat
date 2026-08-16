@@ -51,6 +51,15 @@ struct attempt {
 	bool used;
 };
 
+/* BlueZ reports RSSI from advertising reports, so it can arrive before the
+ * link exists and go stale once connected. */
+struct rssi_entry {
+	char device[128];
+	int rssi;
+	int64_t at;
+	bool used;
+};
+
 /* Ties an async Connect reply back to the device it was made for. */
 struct connect_ctx {
 	struct bc_ble *b;
@@ -75,6 +84,7 @@ struct bc_ble {
 	size_t link_count;
 	size_t connecting;
 	struct attempt attempts[32];
+	struct rssi_entry rssi[32];
 
 	uint8_t value[MAX_FRAME]; /* last notified frame */
 	size_t value_len;
@@ -98,6 +108,52 @@ blog(struct bc_ble *b, const char *fmt, ...)
 	vsnprintf(line, sizeof(line), fmt, ap);
 	va_end(ap);
 	b->ops.on_log(b->ud, line);
+}
+
+static struct bc_link *link_find(struct bc_ble *b, const char *device,
+                                 const char *chr);
+
+/* Remember a device's signal strength, and pass it on if it has a link. */
+static void
+note_rssi(struct bc_ble *b, const char *device, int rssi)
+{
+	struct rssi_entry *slot = NULL;
+	struct bc_link *l;
+	size_t i;
+
+	for (i = 0; i < sizeof(b->rssi) / sizeof(b->rssi[0]); i++) {
+		struct rssi_entry *e = &b->rssi[i];
+
+		if (e->used && strcmp(e->device, device) == 0) {
+			slot = e;
+			break;
+		}
+		if (!e->used && slot == NULL)
+			slot = e;
+	}
+	if (slot != NULL) {
+		slot->used = true;
+		snprintf(slot->device, sizeof(slot->device), "%s", device);
+		slot->rssi = rssi;
+		slot->at = bc_now_ms();
+	}
+
+	blog(b, "rssi %d dBm from %s", rssi, device);
+
+	l = link_find(b, device, NULL);
+	if (l != NULL && b->ops.on_rssi != NULL)
+		b->ops.on_rssi(b->ud, l, rssi);
+}
+
+static int
+known_rssi(const struct bc_ble *b, const char *device)
+{
+	size_t i;
+
+	for (i = 0; i < sizeof(b->rssi) / sizeof(b->rssi[0]); i++)
+		if (b->rssi[i].used && strcmp(b->rssi[i].device, device) == 0)
+			return b->rssi[i].rssi;
+	return 0;
 }
 
 /* Tell an embedder when the poll mask changes, so it can re-arm its watch. */
@@ -187,6 +243,8 @@ link_add(struct bc_ble *b, const char *device, const char *chr, bool central)
 	blog(b, "linked with %s", device);
 	if (b->ops.on_link_up != NULL)
 		b->ops.on_link_up(b->ud, l);
+	if (b->ops.on_rssi != NULL && known_rssi(b, device) != 0)
+		b->ops.on_rssi(b->ud, l, known_rssi(b, device));
 	return l;
 }
 
@@ -548,9 +606,12 @@ subscribe_char(struct bc_ble *b, const char *char_path)
 	link_add(b, device, char_path, true);
 }
 
-/* True when the interface dictionary advertises our service UUID. */
+/*
+ * True when the dictionary advertises our service UUID. Any RSSI seen along
+ * the way is recorded: it rides the same property set.
+ */
 static bool
-props_have_service(sd_bus_message *msg)
+props_have_service(struct bc_ble *b, const char *path, sd_bus_message *msg)
 {
 	bool found = false;
 
@@ -562,7 +623,13 @@ props_have_service(sd_bus_message *msg)
 
 		if (sd_bus_message_read(msg, "s", &key) < 0)
 			break;
-		if (key != NULL && strcmp(key, "UUIDs") == 0) {
+		if (key != NULL && strcmp(key, "RSSI") == 0) {
+			int16_t rssi = 0;
+
+			if (sd_bus_message_read(msg, "v", "n", &rssi) >= 0 &&
+			    rssi != 0)
+				note_rssi(b, path, rssi);
+		} else if (key != NULL && strcmp(key, "UUIDs") == 0) {
 			if (sd_bus_message_enter_container(msg, 'v', "as") >=
 			    0) {
 				const char *uuid = NULL;
@@ -639,7 +706,7 @@ on_interfaces_added(sd_bus_message *msg, void *ud, sd_bus_error *err)
 			break;
 
 		if (iface != NULL && strcmp(iface, DEVICE_IFACE) == 0) {
-			if (props_have_service(msg))
+			if (props_have_service(b, path, msg))
 				try_connect(b, path);
 		} else if (iface != NULL &&
 		           strcmp(iface, GATT_CHAR_IFACE) == 0) {
@@ -703,6 +770,13 @@ on_properties_changed(sd_bus_message *msg, void *ud, sd_bus_error *err)
 				        0 &&
 				    !on)
 					disconnected = true;
+			} else if (key != NULL && strcmp(key, "RSSI") == 0) {
+				int16_t rssi = 0;
+
+				if (sd_bus_message_read(msg, "v", "n", &rssi) >=
+				        0 &&
+				    rssi != 0)
+					note_rssi(b, path, rssi);
 			} else {
 				sd_bus_message_skip(msg, "v");
 			}
@@ -790,7 +864,7 @@ managed_objects_done(sd_bus_message *reply, void *ud, sd_bus_error *ret_error)
 			if (sd_bus_message_read(reply, "s", &iface) < 0)
 				break;
 			if (iface != NULL && strcmp(iface, DEVICE_IFACE) == 0) {
-				if (props_have_service(reply))
+				if (props_have_service(b, path, reply))
 					try_connect(b, path);
 			} else if (iface != NULL &&
 			           strcmp(iface, GATT_CHAR_IFACE) == 0) {
@@ -1020,6 +1094,46 @@ bc_ble_free(struct bc_ble *b)
 	sd_bus_slot_unref(b->app_slot);
 	sd_bus_unref(b->bus);
 	free(b);
+}
+
+/* Newest sighting first, so a caller can print the list as it stands. */
+size_t
+bc_ble_rssi(const struct bc_ble *b, struct bc_rssi_info *out, size_t max)
+{
+	int64_t now;
+	size_t n = 0, i, j;
+
+	if (b == NULL || out == NULL)
+		return 0;
+	now = bc_now_ms();
+
+	for (i = 0; i < sizeof(b->rssi) / sizeof(b->rssi[0]) && n < max; i++) {
+		const struct rssi_entry *e = &b->rssi[i];
+		const char *leaf;
+
+		if (!e->used)
+			continue;
+		leaf = strrchr(e->device, '/');
+		leaf = leaf != NULL ? leaf + 1 : e->device;
+		if (strncmp(leaf, "dev_", 4) == 0)
+			leaf += 4;
+
+		snprintf(out[n].address, sizeof(out[n].address), "%.*s",
+		         (int)sizeof(out[n].address) - 1, leaf);
+		out[n].rssi = e->rssi;
+		out[n].age_ms = now - e->at;
+		n++;
+	}
+
+	/* Insertion sort: the table is small and this keeps the list stable. */
+	for (i = 1; i < n; i++) {
+		struct bc_rssi_info tmp = out[i];
+
+		for (j = i; j > 0 && out[j - 1].age_ms > tmp.age_ms; j--)
+			out[j] = out[j - 1];
+		out[j] = tmp;
+	}
+	return n;
 }
 
 int

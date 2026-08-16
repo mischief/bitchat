@@ -127,6 +127,12 @@ ble_link_down(void *ud, void *link)
 }
 
 static void
+ble_rssi(void *ud, void *link, int rssi)
+{
+	bc_mesh_link_rssi(mesh, link, rssi);
+}
+
+static void
 ble_frame(void *ud, void *link, const uint8_t *frame, size_t len)
 {
 	bc_mesh_recv(mesh, link, frame, len);
@@ -211,10 +217,18 @@ cmd_bitchat(const void *pointer, void *data, struct t_gui_buffer *buf, int argc,
 
 		n = bc_mesh_peers(mesh, peers,
 		                  sizeof(peers) / sizeof(peers[0]));
-		for (i = 0; i < n; i++)
-			say(weechat_prefix("network"), "%s (%.8s)%s",
+		for (i = 0; i < n; i++) {
+			char signal[32] = "";
+
+			if (peers[i].rssi != 0)
+				snprintf(
+				    signal, sizeof(signal), " %d dBm %llds ago",
+				    peers[i].rssi,
+				    (long long)(peers[i].rssi_age_ms / 1000));
+			say(weechat_prefix("network"), "%s (%.8s)%s%s",
 			    peers[i].nickname, peers[i].peer_id,
-			    peers[i].encrypted ? " encrypted" : "");
+			    peers[i].encrypted ? " encrypted" : "", signal);
+		}
 		if (n == 0)
 			say(weechat_prefix("network"), "nobody around");
 		return WEECHAT_RC_OK;
@@ -273,6 +287,7 @@ weechat_plugin_init(struct t_weechat_plugin *plugin, int argc, char *argv[])
 	    .on_link_up = ble_link_up,
 	    .on_link_down = ble_link_down,
 	    .on_frame = ble_frame,
+	    .on_rssi = ble_rssi,
 	    .on_log = on_log,
 	    .on_events = on_events,
 	};

@@ -32,6 +32,8 @@ struct peer {
 	bool announced; /* reported to the caller as present */
 	bool direct;
 	void *link;
+	int rssi;
+	int64_t rssi_at;
 	int64_t last_seen;
 	struct bc_noise_hs *hs;
 	bool hs_initiator;
@@ -1091,6 +1093,21 @@ bc_mesh_link_up(struct bc_mesh *m, void *link)
 }
 
 void
+bc_mesh_link_rssi(struct bc_mesh *m, const void *link, int rssi)
+{
+	struct peer *p;
+
+	if (m == NULL || link == NULL)
+		return;
+
+	for (p = m->peers; p != NULL; p = p->next)
+		if (p->link == link) {
+			p->rssi = rssi;
+			p->rssi_at = bc_now_ms();
+		}
+}
+
+void
 bc_mesh_link_down(struct bc_mesh *m, const void *link)
 {
 	struct peer *p, *next;
@@ -1272,6 +1289,8 @@ bc_mesh_peers(struct bc_mesh *m, struct bc_peer_info *out, size_t max)
 		         p->nick);
 		out[n].direct = p->direct;
 		out[n].encrypted = p->sess.established;
+		out[n].rssi = p->rssi;
+		out[n].rssi_age_ms = p->rssi_at ? bc_now_ms() - p->rssi_at : 0;
 		out[n].last_seen_ms = p->last_seen;
 		n++;
 	}

@@ -36,7 +36,9 @@ struct bc_peer_info {
 	char peer_id[BC_PEER_ID_LEN * 2 + 1];
 	char nickname[64];
 	bool direct;
-	bool encrypted; /* a Noise session is established */
+	bool encrypted;      /* a Noise session is established */
+	int rssi;            /* dBm, 0 when unknown */
+	int64_t rssi_age_ms; /* how old that reading is */
 	int64_t last_seen_ms;
 };
 
@@ -49,6 +51,9 @@ BC_API void bc_mesh_link_up(struct bc_mesh *m, void *link);
 BC_API void bc_mesh_link_down(struct bc_mesh *m, const void *link);
 BC_API void bc_mesh_recv(struct bc_mesh *m, void *link, const uint8_t *frame,
                          size_t len);
+
+/* Record the signal strength the transport measured for a link. */
+BC_API void bc_mesh_link_rssi(struct bc_mesh *m, const void *link, int rssi);
 
 BC_API int bc_mesh_send_public(struct bc_mesh *m, const char *text);
 /*

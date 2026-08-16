@@ -168,6 +168,14 @@ ble_link_down(void *ud, void *link)
 }
 
 static void
+ble_rssi(void *ud, void *link, int rssi)
+{
+	struct app *a = ud;
+
+	bc_mesh_link_rssi(a->mesh, link, rssi);
+}
+
+static void
 ble_frame(void *ud, void *link, const uint8_t *frame, size_t len)
 {
 	struct app *a = ud;
@@ -209,11 +217,18 @@ show_peers(struct app *a)
 		ui_printf(a->ui, UI_SYSTEM, "* nobody around");
 		return;
 	}
-	for (i = 0; i < n; i++)
-		ui_printf(a->ui, UI_SYSTEM, "* %-16s %.8s %s%s",
+	for (i = 0; i < n; i++) {
+		char signal[32] = "";
+
+		if (peers[i].rssi != 0)
+			snprintf(signal, sizeof(signal), " %d dBm %llds ago",
+			         peers[i].rssi,
+			         (long long)(peers[i].rssi_age_ms / 1000));
+		ui_printf(a->ui, UI_SYSTEM, "* %-16s %.8s %s%s%s",
 		          peers[i].nickname, peers[i].peer_id,
 		          peers[i].direct ? "direct" : "relayed",
-		          peers[i].encrypted ? " encrypted" : "");
+		          peers[i].encrypted ? " encrypted" : "", signal);
+	}
 }
 
 static void
@@ -268,6 +283,19 @@ handle_command(struct app *a, char *line)
 		}
 		*text++ = '\0';
 		send_private(a, arg, text);
+	} else if (strcmp(line, "/rssi") == 0) {
+		struct bc_rssi_info seen[12];
+		size_t n, i;
+
+		n = a->ble != NULL ? bc_ble_rssi(a->ble, seen,
+		                                 sizeof(seen) / sizeof(seen[0]))
+		                   : 0;
+		if (n == 0)
+			ui_printf(a->ui, UI_SYSTEM, "* nothing sighted yet");
+		for (i = 0; i < n; i++)
+			ui_printf(a->ui, UI_SYSTEM, "* %s  %d dBm  %llds ago",
+			          seen[i].address, seen[i].rssi,
+			          (long long)(seen[i].age_ms / 1000));
 	} else if (strcmp(line, "/debug") == 0) {
 		a->debug = !a->debug;
 		ui_printf(a->ui, UI_SYSTEM, "* transport log %s",
@@ -278,7 +306,7 @@ handle_command(struct app *a, char *line)
 	} else if (strcmp(line, "/help") == 0) {
 		ui_printf(a->ui, UI_SYSTEM,
 		          "* /who /msg <peer> <text> /nick <name> /id "
-		          "/debug /quit");
+		          "/rssi /debug /quit");
 	} else {
 		ui_printf(a->ui, UI_SYSTEM, "* unknown command: %s", line);
 	}
@@ -331,6 +359,7 @@ main(int argc, char *argv[])
 	    .on_link_up = ble_link_up,
 	    .on_link_down = ble_link_down,
 	    .on_frame = ble_frame,
+	    .on_rssi = ble_rssi,
 	    .on_log = debug_log,
 	};
 	static struct app app;

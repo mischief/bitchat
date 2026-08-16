@@ -67,7 +67,10 @@ Lines that start with
 are commands:
 .Bl -tag -width "/msg peer text"
 .It Cm /who
-List reachable peers.
+List reachable peers, with signal strength when BlueZ has reported it.
+BlueZ measures RSSI from advertising, not from an open link, so the reading
+is the last one taken while the peer was being discovered and it carries its
+own age.
 .It Cm /msg Ar peer Ar text
 Send a private message.
 .Ar peer

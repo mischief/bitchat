@@ -33,8 +33,13 @@ hardening_args = [
   '-Wshift-overflow',
   '-Wframe-larger-than=2048',
   '-Wreturn-stack-address',
-  '-fsanitize-trap=all',
 ]
+
+# Trapping and the UBSan runtime are alternatives: a trap gives SIGILL with
+# no message, which hides exactly what a sanitizer build is asked to show.
+if get_option('b_sanitize') == 'none'
+  hardening_args += '-fsanitize-trap=all'
+endif
 
 foreach a : hardening_args
   if cc.has_argument(a)

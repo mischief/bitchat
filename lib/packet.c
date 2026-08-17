@@ -74,10 +74,11 @@ struct buf {
 	bool oom;
 };
 
+/* An empty append is legal here; memcpy from NULL would not be. */
 static void
 buf_put(struct buf *b, const void *data, size_t len)
 {
-	if (b->oom)
+	if (b->oom || len == 0)
 		return;
 	if (b->len + len > b->cap) {
 		size_t cap = b->cap ? b->cap * 2 : 256;

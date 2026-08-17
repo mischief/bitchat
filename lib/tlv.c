@@ -22,7 +22,7 @@ struct wbuf {
 static void
 wput(struct wbuf *b, const void *data, size_t len)
 {
-	if (b->oom)
+	if (b->oom || len == 0)
 		return;
 	if (b->len + len > b->cap) {
 		size_t cap = b->cap ? b->cap * 2 : 128;

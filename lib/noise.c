@@ -54,7 +54,8 @@ encrypt_and_hash(struct bc_noise_hs *hs, const uint8_t *in, size_t len,
 	long r;
 
 	if (!hs->has_k) {
-		memcpy(out, in, len);
+		if (len > 0)
+			memcpy(out, in, len);
 		mix_hash(hs, out, len);
 		return (long)len;
 	}
@@ -72,7 +73,8 @@ decrypt_and_hash(struct bc_noise_hs *hs, const uint8_t *in, size_t len,
 	long r;
 
 	if (!hs->has_k) {
-		memcpy(out, in, len);
+		if (len > 0)
+			memcpy(out, in, len);
 		mix_hash(hs, in, len);
 		return (long)len;
 	}

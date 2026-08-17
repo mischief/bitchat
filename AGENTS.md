@@ -98,6 +98,19 @@ ninja -C build clang-format-check
 ninja -C build cppcheck
 ```
 
+Sanitizers, which the release flags deliberately turn off:
+
+```sh
+meson setup build-asan -Db_sanitize=address,undefined -Db_lundef=false \
+    -Ddefault_library=static -Dc_link_args=-static-libasan
+meson test -C build-asan
+```
+
+Static linking and `-static-libasan` are not optional here: a shared build
+aborts with "ASan runtime does not come first". `-fsanitize-trap=all` is
+dropped automatically when a sanitizer is on, since a trap raises SIGILL with
+no message and hides the finding it was meant to expose.
+
 Radio behaviour is not covered by the test suite. Test it against a phone
 running BitChat.
 

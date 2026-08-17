@@ -41,6 +41,7 @@ struct bc_link {
 	char chr[192]; /* remote characteristic, empty in peripheral role */
 	bool central;  /* we write, they notify */
 	bool up;
+	size_t max_frame;
 	struct bc_link *next;
 };
 
@@ -640,11 +641,20 @@ ask_mtu(struct bc_ble *b, const char *char_path)
 static void
 report_mtu(struct bc_ble *b, struct bc_link *l, uint16_t mtu)
 {
-	if (mtu <= ATT_WRITE_OVERHEAD)
+	size_t max_frame;
+
+	if (mtu <= ATT_WRITE_OVERHEAD || l == NULL)
 		return;
+
+	/* BlueZ re-reports the same value on every rescan; say it once. */
+	max_frame = (size_t)(mtu - ATT_WRITE_OVERHEAD);
+	if (l->max_frame == max_frame)
+		return;
+	l->max_frame = max_frame;
+
 	blog(b, "link mtu %u", mtu);
-	if (l != NULL && b->ops.on_mtu != NULL)
-		b->ops.on_mtu(b->ud, l, (size_t)(mtu - ATT_WRITE_OVERHEAD));
+	if (b->ops.on_mtu != NULL)
+		b->ops.on_mtu(b->ud, l, max_frame);
 }
 
 static void

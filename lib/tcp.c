@@ -103,6 +103,8 @@ link_up(struct link *l)
 	l->up = true;
 	if (l->t->ops.on_link_up != NULL)
 		l->t->ops.on_link_up(l->t->ud, l);
+	if (l->t->ops.on_mtu != NULL)
+		l->t->ops.on_mtu(l->t->ud, l, FRAME_MAX - 2);
 }
 
 /* A dialled link is kept for a later retry; an accepted one is discarded. */

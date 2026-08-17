@@ -212,6 +212,7 @@ static const struct bc_tcp_ops tcp_ops = {
     .on_link_down = ble_link_down,
     .on_frame = ble_frame,
     .on_log = debug_log,
+    .on_mtu = ble_mtu,
 };
 
 static void

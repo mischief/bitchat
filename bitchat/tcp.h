@@ -22,6 +22,8 @@ struct bc_tcp_ops {
 	void (*on_frame)(void *ud, void *link, const uint8_t *frame,
 	                 size_t len);
 	void (*on_log)(void *ud, const char *line);
+	/* Largest frame this link accepts. */
+	void (*on_mtu)(void *ud, void *link, size_t max_frame);
 };
 
 /* Listen on port, or pass 0 for an outbound-only node. */

@@ -85,6 +85,14 @@ link_down(void *ud, void *link)
 }
 
 static void
+link_mtu(void *ud, void *link, size_t max_frame)
+{
+	struct node *n = ud;
+
+	bc_mesh_set_link_mtu(n->mesh, link, max_frame);
+}
+
+static void
 frame(void *ud, void *link, const uint8_t *data, size_t len)
 {
 	struct node *n = ud;
@@ -104,6 +112,7 @@ static const struct bc_tcp_ops tcp_ops = {
     .on_link_up = link_up,
     .on_link_down = link_down,
     .on_frame = frame,
+    .on_mtu = link_mtu,
 };
 
 static void

@@ -22,7 +22,8 @@
 #define FRAG_CHUNK_MIN 64
 #define FRAG_OVERHEAD 48 /* packet header, IDs and the fragment header */
 #define FRAG_SLOTS 16
-#define FRAG_MAX_PARTS 512
+#define FRAG_MAX_PARTS 512      /* accepted on receive */
+#define FRAG_MAX_SEND_PARTS 256 /* deployed clients reject more */
 #define MAX_FRAME (64 * 1024)
 
 struct peer {
@@ -221,17 +222,23 @@ emit(struct bc_mesh *m, void *link, void *except, const uint8_t *frame,
 		m->ops.broadcast(m->ud, except, frame, len);
 }
 
-/* The smallest frame any link will take, which is what fragments must fit. */
+/*
+ * The smallest frame any link will take, which is what fragments must fit.
+ * A broadcast goes to every link, so one silent link with a small MTU loses
+ * the message: a link that has not reported yet counts as the floor rather
+ * than as no opinion.
+ */
 static size_t
 link_limit(const struct bc_mesh *m)
 {
+	size_t floor = FRAG_CHUNK_MIN + FRAG_OVERHEAD;
 	size_t limit = 0, i;
 
 	for (i = 0; i < m->link_count; i++) {
-		if (m->link_mtu[i] == 0)
-			continue;
-		if (limit == 0 || m->link_mtu[i] < limit)
-			limit = m->link_mtu[i];
+		size_t mtu = m->link_mtu[i] != 0 ? m->link_mtu[i] : floor;
+
+		if (limit == 0 || mtu < limit)
+			limit = mtu;
 	}
 	return limit;
 }
@@ -262,7 +269,7 @@ send_fragments(struct bc_mesh *m, void *link, void *except,
 	size_t total = (len + cut - 1) / cut;
 	size_t i;
 
-	if (total > 0xffff)
+	if (total > FRAG_MAX_SEND_PARTS)
 		return -EMSGSIZE;
 	if (bc_random(frag_id, sizeof(frag_id)) < 0)
 		return -EIO;
@@ -839,8 +846,10 @@ handle_fragment(struct bc_mesh *m, const struct bc_packet *p, void *link)
 
 	index = (uint16_t)((p->payload[8] << 8) | p->payload[9]);
 	total = (uint16_t)((p->payload[10] << 8) | p->payload[11]);
-	if (total == 0 || index >= total || total > FRAG_MAX_PARTS)
+	if (total == 0 || index >= total || total > FRAG_MAX_PARTS) {
+		mlog(m, "fragment %u/%u out of range", index, total);
 		return;
+	}
 
 	for (i = 0; i < FRAG_SLOTS; i++) {
 		struct frag_asm *f = &m->frags[i];
@@ -1133,6 +1142,12 @@ bc_mesh_link_up(struct bc_mesh *m, void *link)
 	if (m == NULL ||
 	    m->link_count >= sizeof(m->links) / sizeof(m->links[0]))
 		return;
+	/*
+	 * Clear the MTU as the slot is taken and again as it is vacated:
+	 * link_down swaps the last entry down, so a recycled slot would
+	 * otherwise inherit a dead peer's frame size.
+	 */
+	m->link_mtu[m->link_count] = 0;
 	m->links[m->link_count++] = link;
 	m->next_announce = 0; /* announce into the new link right away */
 }
@@ -1179,6 +1194,7 @@ bc_mesh_link_down(struct bc_mesh *m, const void *link)
 			continue;
 		m->links[i] = m->links[m->link_count - 1];
 		m->link_mtu[i] = m->link_mtu[m->link_count - 1];
+		m->link_mtu[m->link_count - 1] = 0;
 		m->link_count--;
 		break;
 	}

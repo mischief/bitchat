@@ -32,6 +32,7 @@ struct node {
 	size_t queued;
 	char last_public[256];
 	int relayed;
+	int frames;
 };
 
 static struct node a, b, c;
@@ -41,6 +42,7 @@ enqueue(struct node *n, void *link, const uint8_t *frame, size_t len)
 {
 	if (n->queued >= QUEUE_MAX || len > FRAME_MAX)
 		return;
+	n->frames++;
 	memcpy(n->queue[n->queued].data, frame, len);
 	n->queue[n->queued].len = len;
 	n->queue[n->queued].link = link;
@@ -205,6 +207,36 @@ main(void)
 	assert(bc_mesh_send_public(c.mesh, "fire better") == 0);
 	pump();
 	assert(strcmp(a.last_public, "carol: fire better") == 0);
+
+	/*
+	 * A recycled link slot must not inherit the MTU of the link that
+	 * used to sit there. Give one link a large MTU, drop the other, and
+	 * bring it back without reporting one: a link of unknown size has to
+	 * be treated as small, or fragments are cut too big for it.
+	 */
+	{
+		static char big[600];
+		size_t j;
+
+		bc_mesh_set_link_mtu(b.mesh, LINK_BC, 2048);
+		bc_mesh_link_down(b.mesh, LINK_BA);
+		bc_mesh_link_up(b.mesh, LINK_BA);
+
+		for (j = 0; j < sizeof(big) - 1; j++)
+			big[j] = 'a' + (char)(j % 26);
+		big[sizeof(big) - 1] = '\0';
+
+		a.frames = 0;
+		assert(bc_mesh_send_public(b.mesh, big) == 0);
+		pump();
+
+		/*
+		 * The body deflates first, so this is a few fragments at the
+		 * 64-byte floor. Inheriting 2048 would send one frame that
+		 * the link never agreed to carry.
+		 */
+		assert(a.frames >= 3);
+	}
 
 	/* Nothing loops: a second delivery of the same frame is dropped. */
 	a.last_public[0] = '\0';

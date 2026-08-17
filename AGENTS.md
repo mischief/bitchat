@@ -37,6 +37,12 @@ details:
   toward 256/512/1024/2048 bytes.
 - Compressed payloads use raw deflate, with the original size in front.
 - Fragment payloads are `id[8] index[2] total[2] type[1]` then the chunk.
+  Sets are capped at 256 on send, since deployed clients reject more, and up
+  to 512 are accepted on receive.
+- Fragments are cut to the smallest link the node holds, and a link that has
+  not reported an MTU counts as the floor. Sizing is global rather than
+  per-link, so one small link shrinks every fragment; per-link sizing would
+  mean fragmenting inside the send path instead of above it.
 - Transport frames inside a session are `nonce[4] big endian || ciphertext ||
   tag[16]`. The nonce is on the wire, and the receiver keeps a 1024-entry
   sliding replay window rather than a counter.

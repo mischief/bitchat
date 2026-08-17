@@ -209,6 +209,33 @@ main(void)
 	assert(strcmp(a.last_public, "carol: fire better") == 0);
 
 	/*
+	 * Links of different size get different cuts: the small one must not
+	 * be handed the big one's chunking, and the big one must not be
+	 * punished for the small one's limit.
+	 */
+	{
+		static char big[600];
+		size_t j;
+
+		for (j = 0; j < sizeof(big) - 1; j++)
+			big[j] = 'a' + (char)(j % 26);
+		big[sizeof(big) - 1] = '\0';
+
+		bc_mesh_set_link_mtu(b.mesh, LINK_BA, 2048);
+		bc_mesh_set_link_mtu(b.mesh, LINK_BC, 120);
+
+		a.frames = 0;
+		c.frames = 0;
+		assert(bc_mesh_send_public(b.mesh, big) == 0);
+		pump();
+
+		/* Alice takes it whole; carol needs several fragments. */
+		assert(a.frames == 1);
+		assert(c.frames >= 2);
+		assert(c.frames > a.frames);
+	}
+
+	/*
 	 * A recycled link slot must not inherit the MTU of the link that
 	 * used to sit there. Give one link a large MTU, drop the other, and
 	 * bring it back without reporting one: a link of unknown size has to

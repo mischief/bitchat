@@ -51,13 +51,24 @@ struct seen_entry {
 	int64_t at;
 };
 
+/* What a fragment header needs from the packet being carried. */
+struct frag_meta {
+	uint8_t sender[BC_PEER_ID_LEN];
+	uint8_t recipient[BC_PEER_ID_LEN];
+	bool has_recipient;
+	uint8_t ttl;
+	uint8_t type;
+	uint64_t timestamp;
+};
+
 struct relay_entry {
 	uint8_t key[BC_HASH_LEN];
 	uint8_t *frame;
 	size_t len;
 	void *except;
 	int64_t due;
-	bool subset; /* send to a few links rather than all of them */
+	struct frag_meta meta; /* a small link may need this re-cut */
+	bool subset;           /* send to a few links rather than all */
 	bool used;
 };
 
@@ -209,33 +220,30 @@ seen_check_add(struct bc_mesh *m, const uint8_t key[BC_HASH_LEN])
 	return false;
 }
 
-static void
-emit(struct bc_mesh *m, void *link, void *except, const uint8_t *frame,
-     size_t len)
+/*
+ * What a fragment must fit on one link. A link that has not reported an MTU
+ * counts as the floor rather than as no opinion: it still receives what we
+ * send it.
+ */
+static size_t
+link_frame_limit(const struct bc_mesh *m, const void *link)
 {
-	if (link != NULL) {
-		if (m->ops.send != NULL)
-			m->ops.send(m->ud, link, frame, len);
-		return;
-	}
-	if (m->ops.broadcast != NULL)
-		m->ops.broadcast(m->ud, except, frame, len);
+	size_t i;
+
+	for (i = 0; i < m->link_count; i++)
+		if (m->links[i] == link && m->link_mtu[i] != 0)
+			return m->link_mtu[i];
+	return FRAG_CHUNK_MIN + FRAG_OVERHEAD;
 }
 
-/*
- * The smallest frame any link will take, which is what fragments must fit.
- * A broadcast goes to every link, so one silent link with a small MTU loses
- * the message: a link that has not reported yet counts as the floor rather
- * than as no opinion.
- */
+/* The smallest of them, which is what an untargeted send has to satisfy. */
 static size_t
 link_limit(const struct bc_mesh *m)
 {
-	size_t floor = FRAG_CHUNK_MIN + FRAG_OVERHEAD;
 	size_t limit = 0, i;
 
 	for (i = 0; i < m->link_count; i++) {
-		size_t mtu = m->link_mtu[i] != 0 ? m->link_mtu[i] : floor;
+		size_t mtu = link_frame_limit(m, m->links[i]);
 
 		if (limit == 0 || mtu < limit)
 			limit = mtu;
@@ -244,9 +252,8 @@ link_limit(const struct bc_mesh *m)
 }
 
 static size_t
-chunk_size(const struct bc_mesh *m)
+chunk_for(size_t limit)
 {
-	size_t limit = link_limit(m);
 	size_t chunk;
 
 	if (limit == 0)
@@ -260,12 +267,30 @@ chunk_size(const struct bc_mesh *m)
 	return chunk;
 }
 
+static void
+frag_meta_of(struct frag_meta *meta, const struct bc_packet *p)
+{
+	memset(meta, 0, sizeof(*meta));
+	memcpy(meta->sender, p->sender, BC_PEER_ID_LEN);
+	meta->has_recipient = p->has_recipient;
+	if (p->has_recipient)
+		memcpy(meta->recipient, p->recipient, BC_PEER_ID_LEN);
+	meta->ttl = p->ttl;
+	meta->type = p->type;
+	meta->timestamp = p->timestamp;
+}
+
+/*
+ * Cut a frame for one link. Each link gets its own fragment ID because the
+ * chunking differs per link, and a receiver hearing two cuts under one ID
+ * would splice pieces that do not line up.
+ */
 static int
-send_fragments(struct bc_mesh *m, void *link, void *except,
-               const struct bc_packet *p, const uint8_t *frame, size_t len)
+send_fragments(struct bc_mesh *m, void *link, const struct frag_meta *meta,
+               const uint8_t *frame, size_t len)
 {
 	uint8_t frag_id[8];
-	size_t cut = chunk_size(m);
+	size_t cut = chunk_for(link_frame_limit(m, link));
 	size_t total = (len + cut - 1) / cut;
 	size_t i;
 
@@ -293,33 +318,73 @@ send_fragments(struct bc_mesh *m, void *link, void *except,
 		payload[9] = (uint8_t)i;
 		payload[10] = (uint8_t)(total >> 8);
 		payload[11] = (uint8_t)total;
-		payload[12] = p->type;
+		payload[12] = meta->type;
 		memcpy(payload + 13, frame + i * cut, chunk);
 
 		f.version = 1;
 		f.type = BC_MSG_FRAGMENT;
-		f.ttl = p->ttl;
-		f.timestamp = p->timestamp;
-		memcpy(f.sender, p->sender, BC_PEER_ID_LEN);
-		f.has_recipient = p->has_recipient;
-		if (p->has_recipient)
-			memcpy(f.recipient, p->recipient, BC_PEER_ID_LEN);
+		f.ttl = meta->ttl;
+		f.timestamp = meta->timestamp;
+		memcpy(f.sender, meta->sender, BC_PEER_ID_LEN);
+		f.has_recipient = meta->has_recipient;
+		if (meta->has_recipient)
+			memcpy(f.recipient, meta->recipient, BC_PEER_ID_LEN);
 		f.payload = payload;
 		f.payload_len = 13 + chunk;
 
 		r = bc_packet_encode(&f, false, &out, &outlen);
 		if (r < 0)
 			return r;
-		emit(m, link, except, out, outlen);
+		if (m->ops.send != NULL)
+			m->ops.send(m->ud, link, out, outlen);
 	}
 	return 0;
 }
 
-/* Encode and hand a packet to the transport, fragmenting when oversized. */
+/* One link, fragmenting only if that link cannot take the frame whole. */
+static int
+send_one(struct bc_mesh *m, void *link, const struct frag_meta *meta,
+         const uint8_t *frame, size_t len)
+{
+	if (len > link_frame_limit(m, link))
+		return send_fragments(m, link, meta, frame, len);
+
+	if (m->ops.send != NULL)
+		m->ops.send(m->ud, link, frame, len);
+	return 0;
+}
+
+/*
+ * Every link but one. The transport's own broadcast is used when the frame
+ * fits everywhere, since a peripheral reaches all its subscribers with a
+ * single notification; per-link sends are for when the sizes differ.
+ */
+static int
+send_all(struct bc_mesh *m, void *except, const struct frag_meta *meta,
+         const uint8_t *frame, size_t len)
+{
+	size_t i;
+
+	if (len <= link_limit(m) || m->link_count == 0) {
+		if (m->ops.broadcast != NULL)
+			m->ops.broadcast(m->ud, except, frame, len);
+		return 0;
+	}
+
+	for (i = 0; i < m->link_count; i++) {
+		if (m->links[i] == except)
+			continue;
+		send_one(m, m->links[i], meta, frame, len);
+	}
+	return 0;
+}
+
+/* Encode a packet and hand it to the transport, sized for each link. */
 static int
 transmit(struct bc_mesh *m, const struct bc_packet *p, void *link, void *except)
 {
 	autofree uint8_t *frame = NULL;
+	struct frag_meta meta;
 	size_t len;
 	bool pad;
 	int r;
@@ -331,17 +396,10 @@ transmit(struct bc_mesh *m, const struct bc_packet *p, void *link, void *except)
 	if (r < 0)
 		return r;
 
-	{
-		size_t limit = link_limit(m);
-
-		if (limit == 0)
-			limit = FRAG_CHUNK + FRAG_OVERHEAD;
-		if (len > limit)
-			return send_fragments(m, link, except, p, frame, len);
-	}
-
-	emit(m, link, except, frame, len);
-	return 0;
+	frag_meta_of(&meta, p);
+	if (link != NULL)
+		return send_one(m, link, &meta, frame, len);
+	return send_all(m, except, &meta, frame, len);
 }
 
 static int
@@ -1051,6 +1109,7 @@ schedule_relay(struct bc_mesh *m, const struct bc_packet *p,
 	slot->len = len;
 	slot->except = ingress;
 	slot->subset = subset_relay(p);
+	frag_meta_of(&slot->meta, &copy);
 	slot->due = bc_now_ms() + d.delay_ms;
 	memcpy(slot->key, key, BC_HASH_LEN);
 
@@ -1241,7 +1300,7 @@ relay_emit(struct bc_mesh *m, const struct relay_entry *e)
 	size_t want, i, j, sent = 0;
 
 	if (!e->subset || degree <= 2 || degree > 64) {
-		emit(m, NULL, e->except, e->frame, e->len);
+		send_all(m, e->except, &e->meta, e->frame, e->len);
 		return;
 	}
 
@@ -1274,7 +1333,7 @@ relay_emit(struct bc_mesh *m, const struct relay_entry *e)
 		if (best == degree)
 			break;
 
-		emit(m, m->links[best], NULL, e->frame, e->len);
+		send_one(m, m->links[best], &e->meta, e->frame, e->len);
 		scores[best][0] = 0xff;
 		scores[best][1] = 0xff;
 		sent++;
